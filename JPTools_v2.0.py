@@ -219,7 +219,7 @@ def play_toggle_sound(on=True):
 class App(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title("Autopot + Skillspam Ragnarok")
+        self.title("JPTools v2.0 by J O T T A")
         self.geometry("450x370")
         self.resizable(False, False)
 
@@ -286,12 +286,7 @@ class App(tk.Tk):
         self.ss_button.pack(pady=5)
         ToolTip(self.ss_button, "Liga ou desliga o skillspam")
 
-        self.info_label = ttk.Label(self, text="Estados:\n"
-                                               "' ' (vazio) = Desativado\n"
-                                               "'✔' = Skillspam + clique\n"
-                                               "'–' = Spam somente tecla\n"
-                                               "Pressione as teclas no teclado para executar o spam.\n"
-                                               "Feche a janela ou Ctrl+C para sair.",
+        self.info_label = ttk.Label(self, text="Ta em BETA!! Qualquer erro, procure outro ;)",
                                     foreground="blue", font=("Arial", 9))
         self.info_label.pack(pady=5)
 
