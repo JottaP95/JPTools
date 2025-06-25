@@ -1,6 +1,5 @@
 import time
 import threading
-import pymem
 import win32gui
 import win32api
 import win32con
@@ -11,32 +10,42 @@ import keyboard
 import signal
 import sys
 import winsound
+# Adicionando pymem de volta para o AutoPot
+import pymem
 
+# --- CONFIGURAÇÕES E CONSTANTES ---
 PROCESS_NAME = 'ragexe.exe'
-HP_ADDRESS = 21628764
-MAX_HP_ADDRESS = 21628768
-DEFAULT_USE_KEY = 'R'
-POT_THRESHOLD = 0.9  # 90%
+# Endereços para o AutoPot. Serão lidos como endereços estáticos.
+HP_ADDRESS = 0x014A175C
+# Suposição comum: Max HP fica 4 bytes depois do HP atual.
+MAX_HP_ADDRESS = 0x014A1760
+
+
+# --- FUNÇÕES DE ENVIO DE COMANDO (JÁ FUNCIONAIS) ---
 
 def SendMessage(hwnd, msg, wparam, lparam, flags=win32con.SMTO_ABORTIFHUNG, timeout=5000):
     return win32gui.SendMessageTimeout(hwnd, msg, wparam, lparam, flags, timeout)
 
 def SendKey(hwnd, key: str) -> None:
-    char_code = ord(key)
-    vk_code = win32api.VkKeyScan(key) & 0xFF
-    scan_code = win32api.MapVirtualKey(vk_code, 0)
-    lparamdown = (scan_code << 16) | 1
-    lparamup = (1 << 31) | (1 << 30) | (scan_code << 16) | 1
-
+    """ Envia um pressionamento de tecla completo para a janela. """
     try:
+        char_code = ord(key.upper())
+        vk_code = win32api.VkKeyScan(key.upper()) & 0xFF
+        scan_code = win32api.MapVirtualKey(vk_code, 0)
+        lparamdown = (scan_code << 16) | 1
+        lparamup = (1 << 31) | (1 << 30) | (scan_code << 16) | 1
+        
         SendMessage(hwnd, win32con.WM_KEYDOWN, vk_code, lparamdown)
         SendMessage(hwnd, win32con.WM_CHAR, char_code, lparamdown)
+        time.sleep(0.02) # Pausa mínima
         SendMessage(hwnd, win32con.WM_KEYUP, vk_code, lparamup)
     except Exception as e:
         print(f"[ERRO] Falha ao enviar tecla: {e}")
 
 def SendClick(hwnd, x=0, y=0) -> None:
+    """ Envia um clique esquerdo para a janela. """
     SendMessage(hwnd, win32con.WM_LBUTTONDOWN, win32con.MK_LBUTTON, 0)
+    time.sleep(0.02)
     SendMessage(hwnd, win32con.WM_LBUTTONUP, 0, 0)
 
 def get_hwnd_from_pid(pid):
@@ -50,8 +59,9 @@ def get_hwnd_from_pid(pid):
     win32gui.EnumWindows(enum_windows_proc, None)
     return hwnds[0] if hwnds else None
 
+# --- CLASSE AUTOPOT COM NOVA LÓGICA E DIAGNÓSTICO ---
 class AutoPot(threading.Thread):
-    def __init__(self, pm, hwnd, use_key=DEFAULT_USE_KEY, threshold=POT_THRESHOLD):
+    def __init__(self, pm, hwnd, use_key, threshold, hp_debug_var):
         super().__init__()
         self.pm = pm
         self.hwnd = hwnd
@@ -59,26 +69,39 @@ class AutoPot(threading.Thread):
         self.threshold = threshold
         self.running = threading.Event()
         self.daemon = True
+        self.hp_debug_var = hp_debug_var # Variável da GUI para debug
 
     def run(self):
         self.running.set()
+        print("Thread de AutoPot iniciada.")
         while self.running.is_set():
             try:
+                # LÓGICA CORRIGIDA: Lendo de endereços estáticos, como no exemplo original.
+                # Não somamos mais o endereço base.
                 hp = self.pm.read_int(HP_ADDRESS)
                 max_hp = self.pm.read_int(MAX_HP_ADDRESS)
-                if max_hp == 0:
-                    time.sleep(0.1)
-                    continue
-                hp_percent = hp / max_hp
-                if hp_percent < self.threshold:
-                    SendKey(self.hwnd, self.use_key)
-                time.sleep(0.2)
+                
+                # DIAGNÓSTICO: Atualiza a label na interface para vermos os valores
+                self.hp_debug_var.set(f"HP: {hp} / {max_hp}")
+
+                if max_hp > 0:
+                    hp_percent = (hp / max_hp)
+                    if hp_percent < self.threshold:
+                        print(f"\nHP baixo ({hp_percent:.0%}), usando poção na tecla '{self.use_key}'")
+                        SendKey(self.hwnd, self.use_key)
+                        time.sleep(0.3) # Cooldown para não potar demais
+                time.sleep(0.1)
             except Exception as e:
-                print(f"[ERRO autopot] {e}")
-                break
+                self.hp_debug_var.set("Erro na Leitura")
+                print(f"\n[ERRO no AutoPot] Falha ao ler memória: {e}")
+                time.sleep(1)
 
     def stop(self):
         self.running.clear()
+        self.hp_debug_var.set("HP: N/A")
+        print("\nThread de AutoPot parada.")
+
+# --- CLASSES DA INTERFACE E SKILLSPAM (EXISTENTES) ---
 
 class ToolTip:
     def __init__(self, widget, text):
@@ -89,32 +112,24 @@ class ToolTip:
         widget.bind("<Leave>", self.hide_tip)
 
     def show_tip(self, event=None):
-        if self.tipwindow or not self.text:
-            return
-        x, y, cx, cy = self.widget.bbox("insert")
+        if self.tipwindow or not self.text: return
+        x, y, _, _ = self.widget.bbox("insert")
         x += self.widget.winfo_rootx() + 25
         y += self.widget.winfo_rooty() + 20
         self.tipwindow = tw = tk.Toplevel(self.widget)
         tw.wm_overrideredirect(True)
         tw.wm_geometry(f"+{x}+{y}")
-        label = tk.Label(tw, text=self.text, justify='left',
-                         background="#ffffe0", relief='solid', borderwidth=1,
-                         font=("tahoma", "8", "normal"))
+        label = tk.Label(tw, text=self.text, justify='left', background="#ffffe0", relief='solid', borderwidth=1, font=("tahoma", "8", "normal"))
         label.pack(ipadx=1)
 
     def hide_tip(self, event=None):
-        tw = self.tipwindow
+        if self.tipwindow:
+            self.tipwindow.destroy()
         self.tipwindow = None
-        if tw:
-            tw.destroy()
 
 class TriStateCheckbox(tk.Label):
-    STATES = [" ", "✔", "–"]  # ✔ = spam+click, – = somente spam tecla
-    TOOLTIP_TEXTS = [
-        "Desativado: não spama esta tecla",
-        "Skillspam + clique",
-        "Spam somente tecla"
-    ]
+    STATES = [" ", "✔", "–"]
+    TOOLTIP_TEXTS = ["Desativado", "Skillspam + Clique", "Spam Somente Tecla"]
 
     def __init__(self, master, key_name, **kwargs):
         super().__init__(master, text=" ", relief="ridge", width=1, font=("Arial", 10), **kwargs)
@@ -155,13 +170,7 @@ class KeySelector(tk.Frame):
         self.create_widgets()
 
     def create_widgets(self):
-        keys_order = [
-            '1','2','3','4','5','6','7','8','9','0',
-            'Q','W','E','R','T','Y','U','I','O','P',
-            'A','S','D','F','G','H','J','K','L',
-            'Z','X','C','V','B','N','M'
-        ]
-
+        keys_order = ['1','2','3','4','5','6','7','8','9','0','Q','W','E','R','T','Y','U','I','O','P','A','S','D','F','G','H','J','K','L','Z','X','C','V','B','N','M']
         row, col = 0, 0
         for k in keys_order:
             kw = KeyWidget(self, k)
@@ -188,16 +197,14 @@ class SkillSpam(threading.Thread):
 
     def run(self):
         self.running.set()
+        print("Thread de SkillSpam iniciada.")
         while self.running.is_set():
             key_states = self.key_selector.get_key_states()
             for key, state in key_states.items():
-                if state == 0:
-                    continue
+                if state == 0: continue
                 if keyboard.is_pressed(key):
-                    if state == 1:
-                        self.send_key_and_click(key)
-                    elif state == 2:
-                        self.send_key_only(key)
+                    if state == 1: self.send_key_and_click(key)
+                    elif state == 2: self.send_key_only(key)
                     time.sleep(0.02)
             time.sleep(0.01)
 
@@ -210,6 +217,8 @@ class SkillSpam(threading.Thread):
 
     def stop(self):
         self.running.clear()
+        print("Thread de SkillSpam parada.")
+
 
 def play_toggle_sound(on=True):
     freq = 1000 if on else 600
@@ -219,157 +228,120 @@ def play_toggle_sound(on=True):
 class App(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title("JPTools v2.0 by J O T T A")
-        self.geometry("450x370")
+        self.title("JPTools (SkillSpam + AutoPot)")
+        self.geometry("450x450") # Aumentando um pouco a altura para a nova label
         self.resizable(False, False)
+
+        self.pm = None
+        self.hwnd = None
+        self.skillspam = None
+        self.autopot = None
+        self.registered_hotkeys = []
 
         try:
             self.pm = pymem.Pymem(PROCESS_NAME)
             self.hwnd = get_hwnd_from_pid(self.pm.process_id)
             if not self.hwnd:
-                print("[ERRO] Janela do processo não encontrada.")
+                messagebox.showerror("Erro", f"Processo '{PROCESS_NAME}' encontrado, mas sem janela visível.")
+                self.destroy()
+                return
+        except pymem.exception.ProcessNotFound:
+            messagebox.showerror("Erro de Conexão", f"Processo '{PROCESS_NAME}' não encontrado.")
+            self.destroy()
+            return
         except Exception as e:
-            print(f"[ERRO] Falha ao conectar ao processo: {e}")
-
-        self.autopot = AutoPot(self.pm, self.hwnd) if hasattr(self, 'pm') and self.hwnd else None
-        self.skillspam = None
-        self.registered_hotkeys = []
-
+            messagebox.showerror("Erro de Conexão", f"Falha ao conectar ao processo: {e}")
+            self.destroy()
+            return
+            
         self.create_widgets()
-
         signal.signal(signal.SIGINT, self.signal_handler)
-
         self.protocol("WM_DELETE_WINDOW", self.on_close)
-
         self.register_hotkeys()
 
     def create_widgets(self):
-        ap_frame = ttk.LabelFrame(self, text="Autopot")
-        ap_frame.pack(fill='x', padx=10, pady=5)
+        main_frame = ttk.Frame(self, padding="10")
+        main_frame.pack(fill="both", expand=True)
 
-        self.ap_button = ttk.Button(ap_frame, text="Ligar Autopot", command=self.toggle_autopot)
-        self.ap_button.pack(padx=5, pady=5)
-        ToolTip(self.ap_button, "Liga ou desliga o autopot")
+        ap_frame = ttk.LabelFrame(main_frame, text="Autopot")
+        ap_frame.pack(fill='x', padx=5, pady=5)
 
         ap_key_frame = ttk.Frame(ap_frame)
         ap_key_frame.pack(fill='x', padx=5, pady=5)
-        ttk.Label(ap_key_frame, text="Tecla do Autopot:").pack(side="left")
+        ttk.Label(ap_key_frame, text="Tecla da Poção:").pack(side="left")
         self.autopot_key_entry = ttk.Entry(ap_key_frame, width=5)
-        self.autopot_key_entry.insert(0, DEFAULT_USE_KEY)
+        self.autopot_key_entry.insert(0, "R")
         self.autopot_key_entry.pack(side="left", padx=5)
-        ToolTip(self.autopot_key_entry, "Tecla que o autopot irá usar para ativar a poção")
+        ToolTip(self.autopot_key_entry, "Tecla que será pressionada para usar a poção.")
 
         ap_threshold_frame = ttk.Frame(ap_frame)
         ap_threshold_frame.pack(fill='x', padx=5, pady=2)
-        ttk.Label(ap_threshold_frame, text="HP % para usar poção:").pack(side="left")
+        ttk.Label(ap_threshold_frame, text="Usar se HP < (%):").pack(side="left")
         self.hp_threshold_entry = ttk.Entry(ap_threshold_frame, width=5)
-        self.hp_threshold_entry.insert(0, str(int(POT_THRESHOLD * 100)))
+        self.hp_threshold_entry.insert(0, "80")
         self.hp_threshold_entry.pack(side="left", padx=5)
-        ToolTip(self.hp_threshold_entry, "Digite a porcentagem de HP para usar a poção (ex: 90 para 90%)")
+        ToolTip(self.hp_threshold_entry, "Percentual de vida para ativar o autopot (ex: 80 para 80%).")
 
-        toggle_key_frame = ttk.Frame(self)
-        toggle_key_frame.pack(fill='x', padx=10, pady=5)
-        ttk.Label(toggle_key_frame, text="Atalho para ligar/desligar Autopot + Skillspam:").pack(side="left")
+        # NOVO: Label de Diagnóstico na Interface
+        debug_frame = ttk.Frame(ap_frame)
+        debug_frame.pack(fill='x', padx=5, pady=5)
+        self.hp_debug_var = tk.StringVar(value="HP: N/A")
+        ttk.Label(debug_frame, text="Diagnóstico:", font=("Segoe UI", 8, "italic")).pack(side="left")
+        ttk.Label(debug_frame, textvariable=self.hp_debug_var, font=("Courier", 9)).pack(side="left", padx=5)
+
+
+        toggle_key_frame = ttk.Frame(main_frame)
+        toggle_key_frame.pack(fill='x', padx=5, pady=5)
+        ttk.Label(toggle_key_frame, text="Atalho Global (Ligar/Desligar Tudo):").pack(side="left")
         self.toggle_key_entry = ttk.Entry(toggle_key_frame, width=10)
         self.toggle_key_entry.insert(0, "F1")
         self.toggle_key_entry.pack(side="left", padx=5)
-        ToolTip(self.toggle_key_entry, "Tecla de atalho que liga ou desliga ambos, autopot e skillspam")
+        self.toggle_key_entry.bind("<FocusOut>", lambda e: self.register_hotkeys())
+        ToolTip(self.toggle_key_entry, "Tecla de atalho que liga ou desliga ambos, autopot e skillspam.")
 
-        ss_frame = ttk.LabelFrame(self, text="Skillspam (Clique nos símbolos para alterar o estado)")
-        ss_frame.pack(fill='both', expand=True, padx=10, pady=10)
-
+        ss_frame = ttk.LabelFrame(main_frame, text="Skillspam (Clique para alterar: Vazio=Off, ✔=T+C, –=Tecla)")
+        ss_frame.pack(fill='both', expand=True, padx=5, pady=10)
         self.key_selector = KeySelector(ss_frame)
         self.key_selector.pack()
-        ToolTip(self.key_selector, "Clique nos símbolos para definir o tipo de spam para cada tecla")
-
-        self.ss_button = ttk.Button(ss_frame, text="Ligar Skillspam", command=self.toggle_skillspam)
-        self.ss_button.pack(pady=5)
-        ToolTip(self.ss_button, "Liga ou desliga o skillspam")
-
-        self.info_label = ttk.Label(self, text="Ta em BETA!! Qualquer erro, procure outro ;)",
-                                    foreground="blue", font=("Arial", 9))
-        self.info_label.pack(pady=5)
-
-    def get_hp_threshold(self):
-        try:
-            val = int(self.hp_threshold_entry.get())
-            if 1 <= val <= 100:
-                return val / 100
-        except:
-            pass
-        return POT_THRESHOLD
 
     def register_hotkeys(self):
         for hk in self.registered_hotkeys:
-            try:
-                keyboard.remove_hotkey(hk)
-            except Exception:
-                pass
+            try: keyboard.remove_hotkey(hk)
+            except Exception: pass
         self.registered_hotkeys.clear()
 
         def on_toggle_all():
             autopot_running = self.autopot and self.autopot.running.is_set()
             skillspam_running = self.skillspam and self.skillspam.running.is_set()
-
+            
             if autopot_running or skillspam_running:
-                if autopot_running:
-                    self.autopot.stop()
-                    self.autopot.join()
-                    self.ap_button.config(text="Ligar Autopot")
-                if skillspam_running:
-                    self.skillspam.stop()
-                    self.skillspam.join()
-                    self.ss_button.config(text="Ligar Skillspam")
-                    self.skillspam = None
+                if self.autopot: self.autopot.stop()
+                if self.skillspam: self.skillspam.stop()
                 play_toggle_sound(False)
+                print("\nTudo desligado.")
             else:
-                use_key = self.autopot_key_entry.get().strip()
-                if not use_key:
-                    use_key = DEFAULT_USE_KEY
-                threshold = self.get_hp_threshold()
-                if not self.autopot or not self.autopot.running.is_set():
-                    self.autopot = AutoPot(self.pm, self.hwnd, use_key=use_key, threshold=threshold)
-                    self.autopot.start()
-                    self.ap_button.config(text="Desligar Autopot")
-                if not self.skillspam and self.hwnd:
+                try:
+                    pot_key = self.autopot_key_entry.get()
+                    threshold = int(self.hp_threshold_entry.get()) / 100
+                    if not pot_key or not (0 < threshold < 1):
+                        messagebox.showerror("Erro", "Configurações do Autopot inválidas.")
+                        return
+                    
+                    self.autopot = AutoPot(self.pm, self.hwnd, use_key=pot_key, threshold=threshold, hp_debug_var=self.hp_debug_var)
                     self.skillspam = SkillSpam(self.hwnd, self.key_selector)
+                    self.autopot.start()
                     self.skillspam.start()
-                    self.ss_button.config(text="Desligar Skillspam")
-                play_toggle_sound(True)
+                    play_toggle_sound(True)
+                    print("Tudo ligado.")
+                except Exception as e:
+                    messagebox.showerror("Erro ao Iniciar", f"Verifique as configurações. Detalhes: {e}")
 
         try:
             hotkey = self.toggle_key_entry.get()
             hk = keyboard.add_hotkey(hotkey, on_toggle_all)
             self.registered_hotkeys.append(hk)
         except Exception as e:
-            print(f"[ERRO] Não foi possível registrar hotkey: {e}")
-
-    def toggle_autopot(self):
-        if self.autopot and self.autopot.running.is_set():
-            self.autopot.stop()
-            self.autopot.join()
-            self.ap_button.config(text="Ligar Autopot")
-        else:
-            use_key = self.autopot_key_entry.get().strip()
-            if not use_key:
-                use_key = DEFAULT_USE_KEY
-            threshold = self.get_hp_threshold()
-            self.autopot = AutoPot(self.pm, self.hwnd, use_key=use_key, threshold=threshold)
-            self.autopot.start()
-            self.ap_button.config(text="Desligar Autopot")
-
-    def toggle_skillspam(self):
-        if self.skillspam and self.skillspam.running.is_set():
-            self.skillspam.stop()
-            self.skillspam.join()
-            self.ss_button.config(text="Ligar Skillspam")
-            self.skillspam = None
-        elif self.hwnd:
-            self.skillspam = SkillSpam(self.hwnd, self.key_selector)
-            self.skillspam.start()
-            self.ss_button.config(text="Desligar Skillspam")
-        else:
-            self.info_label.config(text="Erro: janela do jogo não encontrada.", foreground="red")
+            print(f"[ERRO] Não foi possível registrar hotkey '{hotkey}': {e}")
 
     def on_close(self):
         print("[INFO] Fechando aplicação...")
@@ -377,12 +349,8 @@ class App(tk.Tk):
         self.destroy()
 
     def cleanup(self):
-        if self.autopot and self.autopot.running.is_set():
-            self.autopot.stop()
-            self.autopot.join()
-        if self.skillspam and self.skillspam.running.is_set():
-            self.skillspam.stop()
-            self.skillspam.join()
+        if self.autopot: self.autopot.stop()
+        if self.skillspam: self.skillspam.stop()
 
     def signal_handler(self, sig, frame):
         print("\n[INFO] Ctrl+C detectado! Encerrando...")
