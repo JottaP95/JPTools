@@ -5,108 +5,186 @@ import win32api
 import win32con
 import win32process
 import tkinter as tk
-from tkinter import ttk, messagebox
+from tkinter import ttk, messagebox, font
 import keyboard
 import signal
 import sys
+import os
 import winsound
 import pymem
-import struct  # Necessário para desempacotar a lista de buffs
+import struct
+from PIL import Image, ImageTk
 
 # --- CONFIGURAÇÕES E CONSTANTES ---
-PROCESS_NAME = 'NexosV3.exe'
+PROCESS_NAME = 'Ragexe.exe'
+ICON_FOLDER = 'icons' # Pasta para os ícones ao lado do script
 
-# --- ENDEREÇOS DE MEMÓRIA ---
-HP_ADDRESS = 0x01138DDC
-MAX_HP_ADDRESS = 0x01138DE0
+# --- ENDEREÇOS DE MEMÓRIA (Mantenha os seus se forem diferentes) ---
+HP_ADDRESS = 0x014A175C
+MAX_HP_ADDRESS = 0x014A1760
+BUFF_LIST_ADDRESS = 0x014A1BEC
+BUFF_LIST_SIZE = 80 # Número de slots de buff a serem lidos
 
-# --- NOVO: LÓGICA DE AUTOBUFF POR LISTA DE IDs ---
-# Endereço estático onde a lista de IDs de status ativos começa.
-BUFF_LIST_ADDRESS = 0x0113925C
-# Número de slots de buff a serem lidos da memória. Ajuste se necessário.
-BUFF_LIST_SIZE = 80
+# --- CONFIGURAÇÃO DA LISTA DE BUFFS ---
+# Edite este dicionário para adicionar/remover skills e grupos.
+# A interface se adaptará a esta estrutura.
+BUFF_CONFIG = {
+    "Espadachim Skills": [
+        {'id': 1,   'name': 'Endure',       'icon': 'endure.png',    'key': 'F3'},
+        {'id': 104, 'name': 'Parry',        'icon': 'twohand.png',   'key': 'F4'},
+        {'id': 12,  'name': 'Aumentar Agi', 'icon': 'inc_agi.png',   'key': 'F5'},
+        {'id': 23,  'name': 'Adrenalina',   'icon': 'adrenaline.png','key': 'F6'},
+        # Adicione mais skills de espadachim aqui
+    ],
+    "Outra Classe Skills": [
+        # {'id': XX,  'name': 'Nome Skill',   'icon': 'skill.png',     'key': ''},
+    ]
+}
 
-# --- CONFIGURAÇÃO DOS BUFFS QUE VOCÊ QUER MONITORAR ---
-# Adicione os buffs aqui. Crie uma pasta "icons" ao lado do script e coloque as imagens.
-# Formato: {'id': ID_DO_BUFF, 'name': 'Nome do Buff', 'icon': 'caminho/do/icone.png'}
-BUFF_CONFIG = [
-    {'id': 1, 'name': 'Endure', 'icon': 'icons/endure.png'},
-    {'id': 2, 'name': 'Two-Hand Quicken', 'icon': 'icons/twohand.png'},
-    {'id': 12, 'name': 'Aumentar Agi', 'icon': 'icons/inc_agi.png'},
-    {'id': 23, 'name': 'Adrenalina', 'icon': 'icons/adrenaline.png'},
-    # Adicione mais buffs conforme necessário...
-]
 
-
-# --- FUNÇÕES DE ENVIO DE COMANDO (DO SEU CÓDIGO) ---
-def SendMessage(hwnd, msg, wparam, lparam, flags=win32con.SMTO_ABORTIFHUNG, timeout=5000):
+# --- FUNÇÕES DE INTERAÇÃO COM O JOGO ---
+def send_message(hwnd, msg, wparam, lparam, flags=win32con.SMTO_ABORTIFHUNG, timeout=5000):
     return win32gui.SendMessageTimeout(hwnd, msg, wparam, lparam, flags, timeout)
 
-def SendKey(hwnd, key: str) -> None:
+def send_key(hwnd, key: str) -> None:
     """ Envia um pressionamento de tecla completo para a janela. """
     try:
         if key.upper().startswith('F') and len(key) > 1 and key[1:].isdigit():
             vk_code = 0x70 + int(key[1:]) - 1
-            char_code = 0
         else:
-            char_code = ord(key.upper())
             vk_code = win32api.VkKeyScan(key.upper()) & 0xFF
         
         scan_code = win32api.MapVirtualKey(vk_code, 0)
-        lparamdown = (scan_code << 16) | 1
-        lparamup = (1 << 31) | (1 << 30) | (scan_code << 16) | 1
+        lparam_down = (scan_code << 16) | 1
+        lparam_up = (1 << 31) | (1 << 30) | (scan_code << 16) | 1
         
-        SendMessage(hwnd, win32con.WM_KEYDOWN, vk_code, lparamdown)
-        if char_code != 0:
-            SendMessage(hwnd, win32con.WM_CHAR, char_code, lparamdown)
+        send_message(hwnd, win32con.WM_KEYDOWN, vk_code, lparam_down)
         time.sleep(0.02)
-        SendMessage(hwnd, win32con.WM_KEYUP, vk_code, lparamup)
+        send_message(hwnd, win32con.WM_KEYUP, vk_code, lparam_up)
     except Exception as e:
         print(f"[ERRO] Falha ao enviar tecla '{key}': {e}")
 
-def SendClick(hwnd, x=0, y=0) -> None:
-    SendMessage(hwnd, win32con.WM_LBUTTONDOWN, win32con.MK_LBUTTON, 0)
-    time.sleep(0.02); SendMessage(hwnd, win32con.WM_LBUTTONUP, 0, 0)
+def send_click(hwnd) -> None:
+    """ Envia um clique esquerdo na posição atual do cursor para a janela. """
+    try:
+        # Pega a posição do cursor na tela
+        screen_pos = win32gui.GetCursorPos()
+        # Converte a posição da tela para coordenadas do cliente (da janela do jogo)
+        client_pos = win32gui.ScreenToClient(hwnd, screen_pos)
+        # Compõe o parâmetro lParam com as coordenadas x e y
+        lparam = win32api.MAKELONG(client_pos[0], client_pos[1])
+        
+        # Envia as mensagens de clique
+        send_message(hwnd, win32con.WM_LBUTTONDOWN, win32con.MK_LBUTTON, lparam)
+        time.sleep(0.02)
+        send_message(hwnd, win32con.WM_LBUTTONUP, 0, lparam)
+    except Exception as e:
+        print(f"[ERRO] Falha ao enviar clique: {e}")
+
 
 def get_hwnd_from_pid(pid):
+    """Encontra o HWND principal de um Process ID."""
     hwnds = []
     def enum_windows_proc(hwnd, lParam):
-        if win32gui.IsWindowVisible(hwnd):
+        if win32gui.IsWindowVisible(hwnd) and win32gui.GetParent(hwnd) == 0:
             _, window_pid = win32process.GetWindowThreadProcessId(hwnd)
-            if window_pid == pid: hwnds.append(hwnd)
+            if window_pid == pid:
+                hwnds.append(hwnd)
         return True
     win32gui.EnumWindows(enum_windows_proc, None)
     return hwnds[0] if hwnds else None
 
-# --- CLASSE AUTOPOT (EXISTENTE) ---
+# --- JANELA POPUP PARA CAPTURAR TECLA ---
+class KeyCapturePopup(tk.Toplevel):
+    def __init__(self, parent, callback):
+        super().__init__(parent)
+        self.callback = callback
+        self.title("Definir Atalho")
+        self.geometry("250x100")
+        self.configure(bg="#3C3C3C")
+        
+        # Centralizar popup
+        parent_x = parent.winfo_x()
+        parent_y = parent.winfo_y()
+        parent_width = parent.winfo_width()
+        parent_height = parent.winfo_height()
+        self.geometry(f"+{parent_x + (parent_width // 2) - 125}+{parent_y + (parent_height // 2) - 50}")
+
+        self.label = ttk.Label(self, text="Pressione uma tecla...\n(ESC para limpar o atalho)",
+                               font=("Segoe UI", 10), justify="center")
+        self.label.pack(expand=True, fill="both", padx=10, pady=10)
+
+        # Tornar a janela modal e forçar o foco
+        self.transient(parent)
+        self.grab_set()
+        self.focus_force() # **CORREÇÃO: Força o foco na janela popup**
+        
+        # Capturar eventos
+        self.bind("<KeyPress>", self.on_key_press)
+        self.bind("<Escape>", self.on_escape)
+
+    def on_key_press(self, event):
+        # Ignorar modificadores
+        if event.keysym in ('Shift_L', 'Shift_R', 'Control_L', 'Control_R', 'Alt_L', 'Alt_R', 'Escape'):
+            return
+        
+        # Formatar o nome da tecla
+        key_name = event.keysym
+        if 'KP_' in key_name: # Teclas do Numpad
+            key_name = key_name.replace('KP_', 'NUM') # Ex: NUMADD, NUMSUB
+        
+        self.callback(key_name.upper())
+        self.destroy()
+
+    def on_escape(self, event):
+        self.callback("") # Envia string vazia para limpar
+        self.destroy()
+
+# --- CLASSES DAS THREADS DE AUTOMAÇÃO ---
 class AutoPot(threading.Thread):
-    def __init__(self, pm, hwnd, use_key, threshold, hp_debug_var):
-        super().__init__()
-        self.pm, self.hwnd, self.use_key = pm, hwnd, use_key
-        self.threshold, self.running = threshold, threading.Event()
-        self.daemon, self.hp_debug_var = True, hp_debug_var
+    def __init__(self, pm, hwnd, use_key, threshold_percent, status_callback):
+        super().__init__(daemon=True)
+        self.pm, self.hwnd = pm, hwnd
+        self.use_key = use_key
+        self.threshold = threshold_percent / 100.0
+        self.status_callback = status_callback
+        self.running = threading.Event()
+
     def run(self):
-        self.running.set(); print("Thread de AutoPot iniciada.")
+        self.running.set()
+        print("Thread de AutoPot iniciada.")
         while self.running.is_set():
             try:
-                hp, max_hp = self.pm.read_int(HP_ADDRESS), self.pm.read_int(MAX_HP_ADDRESS)
-                self.hp_debug_var.set(f"HP: {hp} / {max_hp}")
-                if max_hp > 0 and (hp / max_hp) < self.threshold:
-                    print(f"HP baixo ({(hp/max_hp):.0%}), usando poção na tecla '{self.use_key}'")
-                    SendKey(self.hwnd, self.use_key); time.sleep(0.3)
+                hp = self.pm.read_int(HP_ADDRESS)
+                max_hp = self.pm.read_int(MAX_HP_ADDRESS)
+                
+                if max_hp > 0:
+                    current_hp_percent = (hp / max_hp)
+                    self.status_callback(f"HP: {hp} / {max_hp} ({current_hp_percent:.0%})", "green")
+                    if current_hp_percent < self.threshold:
+                        print(f"HP baixo ({current_hp_percent:.0%}), usando poção na tecla '{self.use_key}'")
+                        send_key(self.hwnd, self.use_key)
+                        time.sleep(0.3) # Cooldown para evitar spam de poção
+                else:
+                    self.status_callback("HP: 0 / 0", "gray")
+                
                 time.sleep(0.1)
-            except Exception: self.hp_debug_var.set("Erro na Leitura"); time.sleep(1)
-    def stop(self): self.running.clear(); self.hp_debug_var.set("HP: N/A"); print("Thread de AutoPot parada.")
+            except (pymem.exception.MemoryReadError, ZeroDivisionError):
+                self.status_callback("Erro na leitura de HP", "red")
+                time.sleep(1)
+        print("Thread de AutoPot parada.")
+        self.status_callback("HP: N/A", "gray")
 
-# --- NOVA CLASSE AUTOBUFF REFEITA ---
+    def stop(self):
+        self.running.clear()
+
 class AutoBuff(threading.Thread):
-    def __init__(self, pm, hwnd, buffs_to_monitor, buff_debug_var):
-        super().__init__()
+    def __init__(self, pm, hwnd, buffs_to_monitor, status_callback):
+        super().__init__(daemon=True)
         self.pm, self.hwnd = pm, hwnd
         self.buffs_to_monitor = buffs_to_monitor
-        self.buff_debug_var = buff_debug_var
+        self.status_callback = status_callback
         self.running = threading.Event()
-        self.daemon = True
 
     def get_active_buffs(self):
         try:
@@ -117,192 +195,318 @@ class AutoBuff(threading.Thread):
             return set()
 
     def run(self):
-        self.running.set(); print("Thread de AutoBuff iniciada.")
+        self.running.set()
+        print("Thread de AutoBuff iniciada.")
         while self.running.is_set():
             active_buff_ids = self.get_active_buffs()
-            self.buff_debug_var.set(f"Buffs Ativos: {len(active_buff_ids)}")
-            
+            self.status_callback(f"Buffs ativos: {len(active_buff_ids)}", "green")
+
             for buff in self.buffs_to_monitor:
+                if not self.running.is_set(): break
                 if buff['id'] not in active_buff_ids:
                     print(f"Buff '{buff['name']}' inativo. Usando skill na tecla '{buff['key']}'")
-                    SendKey(self.hwnd, buff['key'])
+                    send_key(self.hwnd, buff['key'])
                     time.sleep(1.0) # Cooldown para não spammar o mesmo buff
-            time.sleep(1.5) # Intervalo entre verificações completas
+            
+            time.sleep(1.5)
+        print("Thread de AutoBuff parada.")
+        self.status_callback("Buffs: N/A", "gray")
 
     def stop(self):
-        self.running.clear(); self.buff_debug_var.set("Buffs: N/A"); print("Thread de AutoBuff parada.")
-
-# --- CLASSES DE INTERFACE E SKILLSPAM (EXISTENTES) ---
-class ToolTip:
-    def __init__(self, w, t): self.w, self.t, self.tw = w, t, None; w.bind("<Enter>", self.s); w.bind("<Leave>", self.h)
-    def s(self, e=None):
-        if self.tw or not self.t: return
-        x, y, _, _ = self.w.bbox("insert"); x += self.w.winfo_rootx() + 25; y += self.w.winfo_rooty() + 20
-        self.tw = tw = tk.Toplevel(self.w); tw.wm_overrideredirect(True); tw.wm_geometry(f"+{x}+{y}")
-        tk.Label(tw, text=self.t, justify='left', bg="#ffffe0", relief='solid', borderwidth=1, font=("tahoma", "8", "normal")).pack(ipadx=1)
-    def h(self, e=None):
-        if self.tw: self.tw.destroy()
-        self.tw = None
-
-class TriStateCheckbox(tk.Label):
-    S=[" ", "✔", "–"]; T=["Desativado", "Skillspam+Clique", "Spam Tecla"]
-    def __init__(self, m, k, **kw): super().__init__(m,text=" ",relief="ridge",width=1,font=("Arial",10),**kw); self.s=0; self.k=k.lower(); self.bind("<Button-1>", self.t); self.u(); self.tt=ToolTip(self,self.T[self.s])
-    def t(self,e=None): self.s=(self.s+1)%3; self.u(); self.tt.t=self.T[self.s]
-    def u(self): self.config(text=self.S[self.s])
-    def g(self): return self.s
-
-class KeyWidget(tk.Frame):
-    def __init__(self, m, k): super().__init__(m,relief="flat",bd=1); self.k=k.upper(); self.c=TriStateCheckbox(self,k); self.c.pack(side="right",padx=(1,0)); self.l=tk.Label(self,text=self.k,font=("Arial",9),width=2); self.l.pack(side="left")
-    def get_state(self): return self.c.g()
-
-class KeySelector(tk.Frame):
-    def __init__(self, m): super().__init__(m); self.kw, self.ks = [], {}; self.c()
-    def c(self):
-        k_ = ['1','2','3','4','5','6','7','8','9','0','Q','W','E','R','T','Y','U','I','O','P','A','S','D','F','G','H','J','K','L','Z','X','C','V','B','N','M']
-        for i, k in enumerate(k_): kw = KeyWidget(self, k); kw.grid(row=i//10, column=i%10, padx=1, pady=1); self.kw.append(kw); self.ks[k.lower()] = 0
-    def get_key_states(self):
-        for kw in self.kw: self.ks[kw.key_name.lower()] = kw.get_state()
-        return self.ks
+        self.running.clear()
 
 class SkillSpam(threading.Thread):
-    def __init__(self, h, ks): super().__init__(); self.h, self.ks = h, ks; self.r, self.d = threading.Event(), True
+    def __init__(self, hwnd, get_key_states_func):
+        super().__init__(daemon=True)
+        self.hwnd = hwnd
+        self.get_key_states = get_key_states_func
+        self.running = threading.Event()
+
     def run(self):
-        self.r.set(); print("Thread de SkillSpam iniciada.")
-        while self.r.is_set():
-            for k, s in self.ks.get_key_states().items():
-                if s>0 and keyboard.is_pressed(k):
-                    if s==1: SendKey(self.h, k); SendClick(self.h)
-                    elif s==2: SendKey(self.h, k)
-                    time.sleep(0.02)
+        self.running.set()
+        print("Thread de SkillSpam iniciada.")
+        while self.running.is_set():
+            states = self.get_key_states()
+            for key, state in states.items():
+                if state > 0 and keyboard.is_pressed(key):
+                    if state == 1: # Spam Tecla + Clique
+                        send_key(self.hwnd, key)
+                        send_click(self.hwnd)
+                    elif state == 2: # Spam Tecla Apenas
+                        send_key(self.hwnd, key)
+                    time.sleep(0.05)
             time.sleep(0.01)
-    def stop(self): self.r.clear(); print("Thread de SkillSpam parada.")
+    
+    def stop(self):
+        self.running.clear()
+        print("Thread de SkillSpam parada.")
 
-def play_toggle_sound(on=True): winsound.Beep(1000 if on else 600, 150)
 
-# --- CLASSE PRINCIPAL DA APLICAÇÃO (ATUALIZADA) ---
+# --- INTERFACE GRÁFICA ---
 class App(tk.Tk):
     def __init__(self):
-        super().__init__(); self.title("JPTools (Pot+Buff+Spam)"); self.geometry("450x650"); self.resizable(False, False)
-        self.pm=None; self.hwnd=None; self.skillspam=None; self.autopot=None; self.autobuff=None; self.registered_hotkeys=[]
+        super().__init__()
+        self.pm, self.hwnd, self.threads = None, None, {}
+        self.is_running = False
+        self.buff_icons = {} # Cache para imagens de ícones
+        self.buff_widgets = []
+
+        self.setup_styles()
+        self.title("JPTools Remodelado")
+        self.geometry("550x700")
+        self.resizable(False, False)
+        self.configure(bg=self.colors['bg_main'])
+
+        self.connect_to_process()
+        
+        if self.pm and self.hwnd:
+            self.create_widgets()
+            self.register_hotkeys()
+            self.protocol("WM_DELETE_WINDOW", self.on_close)
+            signal.signal(signal.SIGINT, self.signal_handler)
+        else:
+            self.destroy()
+
+    def setup_styles(self):
+        self.colors = {'bg_main': '#2E2E2E', 'bg_frame': '#3C3C3C', 'bg_light': '#4A4A4A', 'text': '#E0E0E0', 'accent': '#00A0D1', 'green': '#4CAF50', 'red': '#F44336', 'gray': '#9E9E9E'}
+        self.fonts = {'title': font.Font(family="Segoe UI", size=12, weight="bold"), 'body': font.Font(family="Segoe UI", size=10), 'small': font.Font(family="Segoe UI", size=9)}
+        style = ttk.Style(self)
+        style.theme_use('clam')
+        style.configure("TNotebook", background=self.colors['bg_main'], borderwidth=0)
+        style.configure("TNotebook.Tab", background=self.colors['bg_light'], foreground=self.colors['text'], padding=[10, 5], font=self.fonts['body'], borderwidth=0)
+        style.map("TNotebook.Tab", background=[("selected", self.colors['accent'])])
+        style.configure("TFrame", background=self.colors['bg_frame'])
+        style.configure("TLabel", background=self.colors['bg_frame'], foreground=self.colors['text'], font=self.fonts['body'])
+        style.configure("TLabelframe", background=self.colors['bg_frame'], bordercolor=self.colors['gray'], padding=10)
+        style.configure("TLabelframe.Label", background=self.colors['bg_frame'], foreground=self.colors['text'], font=self.fonts['title'])
+        style.configure("TEntry", fieldbackground=self.colors['bg_light'], foreground=self.colors['text'], bordercolor=self.colors['gray'], insertcolor=self.colors['text'])
+        style.configure("TButton", background=self.colors['accent'], foreground="white", font=self.fonts['body'], padding=5)
+        style.map("TButton", background=[('active', '#007A9E')])
+        style.configure("TCheckbutton", background=self.colors['bg_frame'], foreground=self.colors['text'], font=self.fonts['body'])
+        style.map("TCheckbutton", background=[('active', self.colors['bg_frame'])])
+
+        # **CORREÇÃO: Estilos para o Menubutton do SkillSpam**
+        style.configure("TMenubutton", background=self.colors['bg_light'], foreground=self.colors['text'], font=self.fonts['body'], width=3)
+        style.configure('Accent.TMenubutton', background=self.colors['accent'], foreground='white')
+        style.map('Accent.TMenubutton', background=[('active', '#007A9E')])
+
+
+    def connect_to_process(self):
         try:
             self.pm = pymem.Pymem(PROCESS_NAME)
             self.hwnd = get_hwnd_from_pid(self.pm.process_id)
-            if not self.hwnd: raise Exception("Janela visível não encontrada.")
-        except Exception as e: messagebox.showerror("Erro", f"Processo '{PROCESS_NAME}' não encontrado.\n{e}"); self.destroy(); return
-        
-        self.create_widgets()
-        signal.signal(signal.SIGINT, self.signal_handler); self.protocol("WM_DELETE_WINDOW", self.on_close); self.register_hotkeys()
+            if not self.hwnd: raise Exception("Janela visível do Ragnarok não encontrada.")
+            messagebox.showinfo("Sucesso", f"Conectado ao processo '{PROCESS_NAME}' (PID: {self.pm.process_id})")
+        except Exception as e:
+            messagebox.showerror("Erro de Conexão", f"Não foi possível encontrar o processo '{PROCESS_NAME}'.\n\nCertifique-se de que o jogo está aberto.\n\nDetalhes: {e}")
+            self.pm, self.hwnd = None, None
 
     def create_widgets(self):
-        self.main_frame = ttk.Frame(self, padding="10"); self.main_frame.pack(fill="both", expand=True)
-        self.notebook = ttk.Notebook(self.main_frame)
-        self.notebook.pack(fill="both", expand=True)
-        
-        self.page1 = ttk.Frame(self.notebook); self.page2 = ttk.Frame(self.notebook)
-        self.notebook.add(self.page1, text='AutoPot & SkillSpam'); self.notebook.add(self.page2, text='AutoBuff')
-        
-        self.create_page1_widgets()
-        self.create_page2_widgets()
-        
-        toggle_key_frame = ttk.Frame(self.main_frame); toggle_key_frame.pack(fill='x', padx=5, pady=10)
-        ttk.Label(toggle_key_frame, text="Atalho Global (Ligar/Desligar):").pack(side="left")
-        self.toggle_key_entry = ttk.Entry(toggle_key_frame, width=10); self.toggle_key_entry.insert(0, "F1"); self.toggle_key_entry.pack(side="left", padx=5)
+        top_frame = ttk.Frame(self, style='TFrame', padding=10)
+        top_frame.pack(fill='x')
+        self.status_indicator = tk.Label(top_frame, text="PARADO", font=self.fonts['title'], bg=self.colors['red'], fg='white', padx=10, pady=5)
+        self.status_indicator.pack(side='left')
+        hotkey_frame = ttk.Frame(top_frame)
+        hotkey_frame.pack(side='right')
+        ttk.Label(hotkey_frame, text="Atalho Global:", style='TLabel').pack(side='left', padx=(0, 5))
+        self.toggle_key_entry = ttk.Entry(hotkey_frame, width=8, font=self.fonts['body'])
+        self.toggle_key_entry.insert(0, "F1")
+        self.toggle_key_entry.pack(side='left')
         self.toggle_key_entry.bind("<FocusOut>", lambda e: self.register_hotkeys())
 
-    def create_page1_widgets(self):
-        ap_frame = ttk.LabelFrame(self.page1, text="Autopot"); ap_frame.pack(fill='x', padx=5, pady=5)
-        ttk.Label(ap_frame, text="Tecla Poção:").grid(row=0, column=0, padx=5, pady=2, sticky='w')
-        self.autopot_key_entry = ttk.Entry(ap_frame, width=5); self.autopot_key_entry.insert(0, "F2"); self.autopot_key_entry.grid(row=0, column=1, padx=5, pady=2)
-        ttk.Label(ap_frame, text="Usar se HP < (%):").grid(row=1, column=0, padx=5, pady=2, sticky='w')
-        self.hp_threshold_entry = ttk.Entry(ap_frame, width=5); self.hp_threshold_entry.insert(0, "80"); self.hp_threshold_entry.grid(row=1, column=1, padx=5, pady=2)
-        self.hp_debug_var = tk.StringVar(value="HP: N/A"); ttk.Label(ap_frame, text="Diagnóstico:").grid(row=2, column=0, padx=5, pady=2, sticky='w')
-        ttk.Label(ap_frame, textvariable=self.hp_debug_var).grid(row=2, column=1, columnspan=2, sticky='w')
-
-        ss_frame = ttk.LabelFrame(self.page1, text="Skillspam"); ss_frame.pack(fill='both', expand=True, padx=5, pady=5)
-        self.key_selector = KeySelector(ss_frame); self.key_selector.pack()
-
-    def create_page2_widgets(self):
-        self.buff_widgets = [] # Lista para guardar as vars de cada buff
+        self.notebook = ttk.Notebook(self)
+        self.notebook.pack(fill="both", expand=True, padx=10, pady=5)
+        self.page_autopot = ttk.Frame(self.notebook, style='TFrame', padding=15)
+        self.page_autobuff = ttk.Frame(self.notebook, style='TFrame', padding=15)
+        self.page_skillspam = ttk.Frame(self.notebook, style='TFrame', padding=15)
+        self.notebook.add(self.page_autopot, text=' AutoPot ')
+        self.notebook.add(self.page_autobuff, text=' AutoBuff ')
+        self.notebook.add(self.page_skillspam, text=' SkillSpam ')
         
-        # Frame de diagnóstico para o autobuff
-        debug_frame = ttk.Frame(self.page2, padding=5)
-        debug_frame.pack(fill='x')
-        self.buff_debug_var = tk.StringVar(value="Buffs: N/A")
-        ttk.Label(debug_frame, text="Diagnóstico:").pack(side='left')
-        ttk.Label(debug_frame, textvariable=self.buff_debug_var).pack(side='left', padx=5)
+        self.create_autopot_page()
+        self.create_autobuff_page()
+        self.create_skillspam_page()
+
+    def create_autopot_page(self):
+        frame = self.page_autopot
+        ttk.Label(frame, text="AutoPot", font=self.fonts['title']).pack(pady=(0, 20))
+        key_frame = ttk.Frame(frame); key_frame.pack(fill='x', pady=5)
+        ttk.Label(key_frame, text="Tecla da Poção:").pack(side='left', anchor='w', expand=True)
+        self.autopot_key_entry = ttk.Entry(key_frame, width=10, font=self.fonts['body']); self.autopot_key_entry.insert(0, "F2"); self.autopot_key_entry.pack(side='right')
+        hp_frame = ttk.Frame(frame); hp_frame.pack(fill='x', pady=15)
+        self.hp_threshold_label = ttk.Label(hp_frame, text="Usar se HP < 80%"); self.hp_threshold_label.pack(side='left', anchor='w', expand=True)
+        self.hp_threshold_var = tk.IntVar(value=80)
+        self.hp_threshold_slider = ttk.Scale(hp_frame, from_=1, to=99, orient='horizontal', variable=self.hp_threshold_var, command=self.update_hp_label); self.hp_threshold_slider.pack(side='right', fill='x')
+        status_frame = ttk.LabelFrame(frame, text="Diagnóstico", style="TLabelframe"); status_frame.pack(fill='x', pady=20)
+        self.hp_status_label = ttk.Label(status_frame, text="HP: N/A", font=self.fonts['body']); self.hp_status_label.pack(pady=5)
         
-        # Frame com scroll
-        canvas = tk.Canvas(self.page2); scrollbar = ttk.Scrollbar(self.page2, orient="vertical", command=canvas.yview)
-        scrollable_frame = ttk.Frame(canvas)
+    def update_hp_label(self, value):
+        self.hp_threshold_label.config(text=f"Usar se HP < {int(float(value))}%")
+        
+    def create_autobuff_page(self):
+        frame = self.page_autobuff
+        top_frame = ttk.Frame(frame); top_frame.pack(fill='x', pady=(0, 10))
+        ttk.Label(top_frame, text="Diagnóstico:", font=self.fonts['body']).pack(side='left')
+        self.buff_status_label = ttk.Label(top_frame, text="Buffs: N/A", font=self.fonts['body']); self.buff_status_label.pack(side='left', padx=5)
+        
+        canvas = tk.Canvas(frame, bg=self.colors['bg_frame'], highlightthickness=0)
+        scrollbar = ttk.Scrollbar(frame, orient="vertical", command=canvas.yview)
+        scrollable_frame = ttk.Frame(canvas, style='TFrame')
         scrollable_frame.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
         canvas.create_window((0, 0), window=scrollable_frame, anchor="nw"); canvas.configure(yscrollcommand=scrollbar.set)
         canvas.pack(side="left", fill="both", expand=True); scrollbar.pack(side="right", fill="y")
         
-        for buff_info in BUFF_CONFIG:
-            frame = ttk.Frame(scrollable_frame, padding=5); frame.pack(fill='x')
+        self.buff_widgets.clear()
+        
+        for group_name, skills in BUFF_CONFIG.items():
+            if not skills: continue
+            group_frame = ttk.LabelFrame(scrollable_frame, text=group_name, style="TLabelframe")
+            group_frame.pack(fill='x', padx=5, pady=5)
             
-            check_var = tk.BooleanVar(value=False)
-            key_var = tk.StringVar(value=f"F{len(self.buff_widgets)+3}") # Padrão F3, F4, ...
+            max_cols = 5
+            for i, skill_data in enumerate(skills):
+                row, col = divmod(i, max_cols)
+                
+                skill_frame = ttk.Frame(group_frame, style='TFrame')
+                skill_frame.grid(row=row, column=col, padx=5, pady=5)
+                
+                icon_label = ttk.Label(skill_frame, text="?")
+                icon_label.pack()
+                try:
+                    icon_path = os.path.join(ICON_FOLDER, skill_data['icon'])
+                    if icon_path not in self.buff_icons:
+                        pil_img = Image.open(icon_path).resize((32, 32), Image.Resampling.LANCZOS)
+                        self.buff_icons[icon_path] = ImageTk.PhotoImage(pil_img)
+                    icon_label.config(image=self.buff_icons[icon_path])
+                except Exception as e:
+                    print(f"Não foi possível carregar o ícone: {skill_data['icon']} - {e}")
+                
+                ttk.Label(skill_frame, text=skill_data['name'], font=self.fonts['small']).pack()
+                
+                key_var = tk.StringVar(value=skill_data.get('key', ''))
+                
+                # Botão que abre o popup para definir a tecla
+                key_button = ttk.Button(skill_frame, textvariable=key_var, width=6)
+                key_button.pack()
+                key_button.configure(command=lambda var=key_var: self.open_key_capture_popup(var))
+                
+                self.buff_widgets.append({
+                    'id': skill_data['id'],
+                    'name': skill_data['name'],
+                    'key_var': key_var
+                })
 
-            chk = ttk.Checkbutton(frame, variable=check_var); chk.pack(side='left')
-            
-            try:
-                icon_img = tk.PhotoImage(file=buff_info['icon']).subsample(2,2)
-                icon_label = ttk.Label(frame, image=icon_img); icon_label.image = icon_img
-                icon_label.pack(side='left', padx=5)
-            except tk.TclError: # Se o ícone não for encontrado
-                ttk.Label(frame, text="?").pack(side='left', padx=5)
+    def open_key_capture_popup(self, key_var):
+        """Abre a janela para capturar a tecla e atualiza a key_var com o resultado."""
+        # A função de callback atualiza a StringVar diretamente.
+        callback = lambda new_key: key_var.set(new_key)
+        KeyCapturePopup(self, callback)
 
-            ttk.Label(frame, text=buff_info['name'], width=20).pack(side='left', padx=5)
-            ttk.Label(frame, text="Tecla:").pack(side='left', padx=5)
-            ttk.Entry(frame, textvariable=key_var, width=5).pack(side='left')
-            
-            self.buff_widgets.append({'info': buff_info, 'check_var': check_var, 'key_var': key_var})
+    def get_buff_config_from_ui(self):
+        config = []
+        for widget_set in self.buff_widgets:
+            key = widget_set['key_var'].get().strip()
+            if key: # Ativa o buff apenas se a tecla de atalho estiver preenchida
+                config.append({
+                    'id': widget_set['id'],
+                    'name': widget_set['name'],
+                    'key': key
+                })
+        return config
+
+    def create_skillspam_page(self):
+        frame = self.page_skillspam
+        ttk.Label(frame, text="SkillSpam", font=self.fonts['title']).pack(pady=(0, 10))
+        ttk.Label(frame, text="Clique em uma tecla e escolha o modo de spam.\nAtivado ao manter a tecla pressionada.\n(Requer execução como administrador)", justify='center').pack(pady=(0, 15))
+
+        self.key_states = {}
+        key_frame = ttk.Frame(frame, style='TFrame')
+        key_frame.pack(expand=True)
+        
+        keys_to_show = "1234567890QWERTYUIOPASDFGHJKLZXCVBNM"
+        
+        for i, key in enumerate(keys_to_show):
+            row, col = divmod(i, 10)
+            var = tk.IntVar(value=0)
+            self.key_states[key.lower()] = var
+            key_btn = ttk.Menubutton(key_frame, text=key, width=3, style='TMenubutton')
+            key_btn.grid(row=row, column=col, padx=3, pady=3)
+            menu = tk.Menu(key_btn, tearoff=False, bg=self.colors['bg_light'], fg=self.colors['text'])
+            key_btn['menu'] = menu
+
+            # **CORREÇÃO: Usar os estilos corretos para o Menubutton**
+            menu.add_radiobutton(label="Desativado", variable=var, value=0, command=lambda k=key_btn: k.config(style='TMenubutton'))
+            menu.add_radiobutton(label="Spam Tecla+Clique", variable=var, value=1, command=lambda k=key_btn: k.config(style='Accent.TMenubutton'))
+            menu.add_radiobutton(label="Spam Tecla", variable=var, value=2, command=lambda k=key_btn: k.config(style='Accent.TMenubutton'))
+
+    def get_skillspam_states(self):
+        return {key: var.get() for key, var in self.key_states.items()}
+
+    def on_toggle_all(self):
+        if self.is_running: self.stop_all_threads()
+        else: self.start_all_threads()
+
+    def start_all_threads(self):
+        if not self.pm or not self.hwnd:
+            messagebox.showerror("Erro", "Não conectado ao processo do jogo.")
+            return
+
+        print("Ligando funções...")
+        self.is_running = True
+        self.status_indicator.config(text="ATIVO", bg=self.colors['green'])
+        winsound.Beep(1000, 150)
+        
+        try:
+            pot_key = self.autopot_key_entry.get()
+            threshold = self.hp_threshold_var.get()
+            self.threads['autopot'] = AutoPot(self.pm, self.hwnd, pot_key, threshold, self.update_hp_status); self.threads['autopot'].start()
+        except Exception as e: messagebox.showerror("Erro AutoPot", f"Não foi possível iniciar: {e}")
+
+        try:
+            buff_config = self.get_buff_config_from_ui()
+            self.threads['autobuff'] = AutoBuff(self.pm, self.hwnd, buff_config, self.update_buff_status); self.threads['autobuff'].start()
+        except Exception as e: messagebox.showerror("Erro AutoBuff", f"Não foi possível iniciar: {e}")
+
+        try:
+            self.threads['skillspam'] = SkillSpam(self.hwnd, self.get_skillspam_states); self.threads['skillspam'].start()
+        except Exception as e: messagebox.showerror("Erro SkillSpam", f"Não foi possível iniciar: {e}")
+
+    def stop_all_threads(self):
+        print("Desligando funções...")
+        self.is_running = False
+        self.status_indicator.config(text="PARADO", bg=self.colors['red'])
+        winsound.Beep(600, 150)
+        for thread in self.threads.values():
+            if thread.is_alive(): thread.stop()
+        self.threads.clear()
+
+    def update_hp_status(self, text, color):
+        self.hp_status_label.config(text=text, foreground=self.colors.get(color, 'white'))
+        
+    def update_buff_status(self, text, color):
+        self.buff_status_label.config(text=text, foreground=self.colors.get(color, 'white'))
 
     def register_hotkeys(self):
-        for hk in self.registered_hotkeys:
-            try: keyboard.remove_hotkey(hk)
-            except Exception: pass
-        self.registered_hotkeys.clear()
-
-        def on_toggle_all():
-            is_running = (self.autopot and self.autopot.is_alive()) or \
-                         (self.skillspam and self.skillspam.is_alive()) or \
-                         (self.autobuff and self.autobuff.is_alive())
-            if is_running:
-                if self.autopot: self.autopot.stop()
-                if self.skillspam: self.skillspam.stop()
-                if self.autobuff: self.autobuff.stop()
-                play_toggle_sound(False); print("Funções desligadas.")
-            else:
-                try:
-                    pot_key = self.autopot_key_entry.get(); threshold = int(self.hp_threshold_entry.get())/100
-                    
-                    buffs_to_monitor = []
-                    for bw in self.buff_widgets:
-                        if bw['check_var'].get():
-                            buffs_to_monitor.append({'id': bw['info']['id'], 'key': bw['key_var'].get(), 'name': bw['info']['name']})
-
-                    self.autopot = AutoPot(self.pm, self.hwnd, pot_key, threshold, self.hp_debug_var)
-                    self.skillspam = SkillSpam(self.hwnd, self.key_selector)
-                    # Passando a variável de debug para o AutoBuff
-                    self.autobuff = AutoBuff(self.pm, self.hwnd, buffs_to_monitor, self.buff_debug_var)
-                    
-                    self.autopot.start(); self.skillspam.start(); self.autobuff.start()
-                    play_toggle_sound(True); print("Funções ligadas.")
-                except Exception as e: messagebox.showerror("Erro", f"Verifique as configurações. {e}")
+        try: keyboard.remove_all_hotkeys() 
+        except Exception: pass
         try:
             hotkey = self.toggle_key_entry.get()
-            self.registered_hotkeys.append(keyboard.add_hotkey(hotkey, on_toggle_all, suppress=True))
-        except Exception as e: print(f"Erro ao registrar hotkey '{hotkey}': {e}")
+            keyboard.add_hotkey(hotkey, self.on_toggle_all, suppress=True)
+            print(f"Hotkey global '{hotkey}' registrada.")
+        except Exception as e:
+            messagebox.showerror("Erro de Hotkey", f"Não foi possível registrar a hotkey '{hotkey}'.\nTente usar outra tecla.\n\nDetalhes: {e}")
+            
+    def on_close(self):
+        print("Fechando a aplicação...")
+        self.stop_all_threads()
+        self.destroy()
 
-    def on_close(self): print("Fechando..."); self.cleanup(); self.destroy()
-    def cleanup(self):
-        if self.autopot: self.autopot.stop()
-        if self.skillspam: self.skillspam.stop()
-        if self.autobuff: self.autobuff.stop()
-    def signal_handler(self, sig, frame): self.cleanup(); sys.exit(0)
+    def signal_handler(self, sig, frame):
+        self.on_close()
 
 if __name__ == "__main__":
+    if not os.path.isdir(ICON_FOLDER):
+        print(f"Aviso: A pasta '{ICON_FOLDER}' não foi encontrada. Os ícones dos buffs não serão exibidos.")
+        os.makedirs(ICON_FOLDER, exist_ok=True)
     app = App()
-    app.mainloop()
+    if app.pm: app.mainloop()
