@@ -30,10 +30,12 @@ BUFF_LIST_SIZE = 80 # Número de slots de buff a serem lidos
 # A interface se adaptará a esta estrutura.
 BUFF_CONFIG = {
     "Espadachim Skills": [
-        {'id': 1,   'name': 'Endure',       'icon': 'endure.png',    'key': 'F3'},
-        {'id': 104, 'name': 'Parry',        'icon': 'twohand.png',   'key': 'F4'},
-        {'id': 12,  'name': 'Aumentar Agi', 'icon': 'inc_agi.png',   'key': 'F5'},
-        {'id': 23,  'name': 'Adrenalina',   'icon': 'adrenaline.png','key': 'F6'},
+        {'id': 1,   'name': '',       'icon': 'SM_ENDURE.png',    'key': ''},
+        {'id': 104, 'name': '',        'icon': 'LK_PARRYING.png',   'key': ''},
+        {'id': 2,  'name': '', 'icon': 'KN_TWOHANDQUICKEN.png',   'key': ''},
+        {'id': 105,  'name': '',   'icon': 'LK_CONCENTRATION.png','key': ''},
+        {'id': 103,  'name': '',   'icon': 'LK_AURABLADE.png','key': ''},
+        {'id': 316,  'name': '',   'icon': 'ENCHANTBLADE.png','key': ''},
         # Adicione mais skills de espadachim aqui
     ],
     "Outra Classe Skills": [
