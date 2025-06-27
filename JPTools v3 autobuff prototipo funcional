@@ -25,21 +25,30 @@ MAX_HP_ADDRESS = 0x014A1760
 BUFF_LIST_ADDRESS = 0x014A1BEC
 BUFF_LIST_SIZE = 80 # Número de slots de buff a serem lidos
 
+# --- CONFIGURAÇÕES DE DELAY E MOUSE (em segundos) ---
+FLICK_DISTANCE = 5               # Distância em pixels para o "flick" do mouse.
+MOUSE_FLICK_SPEED = 0.01         # Delay entre os movimentos do flick. Menor = mais rápido.
+AUTOPOT_DELAY = 0.3              # Cooldown após usar uma poção para evitar spam.
+AUTOPOT_CHECK_INTERVAL = 0.1     # Intervalo entre cada checagem de HP.
+AUTBUFF_COOLDOWN = 1.0           # Cooldown após usar um buff para o jogo registrar.
+AUTBUFF_CHECK_INTERVAL = 1.5     # Intervalo entre a checagem completa da lista de buffs.
+SKILLSPAM_DELAY = 0.05           # Cooldown entre cada ação de spam de skill.
+
 # --- CONFIGURAÇÃO DA LISTA DE BUFFS ---
 # Edite este dicionário para adicionar/remover skills e grupos.
 # A interface se adaptará a esta estrutura.
 BUFF_CONFIG = {
     "Espadachim Skills": [
-        {'id': 1,   'name': '',       'icon': 'SM_ENDURE.png',    'key': ''},
-        {'id': 104, 'name': '',        'icon': 'LK_PARRYING.png',   'key': ''},
-        {'id': 2,  'name': '', 'icon': 'KN_TWOHANDQUICKEN.png',   'key': ''},
-        {'id': 105,  'name': '',   'icon': 'LK_CONCENTRATION.png','key': ''},
-        {'id': 103,  'name': '',   'icon': 'LK_AURABLADE.png','key': ''},
-        {'id': 316,  'name': '',   'icon': 'ENCHANTBLADE.png','key': ''},
+        {'id': 1,   'name': '',       'icon': 'SM_ENDURE.png',     'key': ''},
+        {'id': 104, 'name': '',       'icon': 'LK_PARRYING.png',   'key': ''},
+        {'id': 2, 'name': '', 'icon': 'KN_TWOHANDQUICKEN.png',     'key': ''},
+        {'id': 105,  'name': '',    'icon': 'LK_CONCENTRATION.png','key': ''},
+        {'id': 103,  'name': '',    'icon': 'LK_AURABLADE.png','key': ''},
+        {'id': 316,  'name': '',    'icon': 'ENCHANTBLADE.png','key': ''},
         # Adicione mais skills de espadachim aqui
     ],
     "Outra Classe Skills": [
-        # {'id': XX,  'name': 'Nome Skill',   'icon': 'skill.png',     'key': ''},
+        # {'id': XX,  'name': 'Nome Skill',    'icon': 'skill.png',       'key': ''},
     ]
 }
 
@@ -66,15 +75,21 @@ def send_key(hwnd, key: str) -> None:
     except Exception as e:
         print(f"[ERRO] Falha ao enviar tecla '{key}': {e}")
 
-def send_click(hwnd) -> None:
-    """ Envia um clique esquerdo na posição atual do cursor para a janela. """
+def send_click(hwnd, coords=None) -> None:
+    """
+    Envia um clique esquerdo para a janela.
+    Se 'coords' for fornecido (tupla (x, y)), clica nessas coordenadas do cliente.
+    Caso contrário, clica na posição atual do cursor.
+    """
     try:
-        # Pega a posição do cursor na tela
-        screen_pos = win32gui.GetCursorPos()
-        # Converte a posição da tela para coordenadas do cliente (da janela do jogo)
-        client_pos = win32gui.ScreenToClient(hwnd, screen_pos)
-        # Compõe o parâmetro lParam com as coordenadas x e y
-        lparam = win32api.MAKELONG(client_pos[0], client_pos[1])
+        if coords:
+            # Usa as coordenadas fornecidas para o clique
+            lparam = win32api.MAKELONG(coords[0], coords[1])
+        else:
+            # Comportamento antigo: usa a posição atual do cursor
+            screen_pos = win32gui.GetCursorPos()
+            client_pos = win32gui.ScreenToClient(hwnd, screen_pos)
+            lparam = win32api.MAKELONG(client_pos[0], client_pos[1])
         
         # Envia as mensagens de clique
         send_message(hwnd, win32con.WM_LBUTTONDOWN, win32con.MK_LBUTTON, lparam)
@@ -82,7 +97,6 @@ def send_click(hwnd) -> None:
         send_message(hwnd, win32con.WM_LBUTTONUP, 0, lparam)
     except Exception as e:
         print(f"[ERRO] Falha ao enviar clique: {e}")
-
 
 def get_hwnd_from_pid(pid):
     """Encontra o HWND principal de um Process ID."""
@@ -119,7 +133,7 @@ class KeyCapturePopup(tk.Toplevel):
         # Tornar a janela modal e forçar o foco
         self.transient(parent)
         self.grab_set()
-        self.focus_force() # **CORREÇÃO: Força o foco na janela popup**
+        self.focus_force()
         
         # Capturar eventos
         self.bind("<KeyPress>", self.on_key_press)
@@ -133,7 +147,7 @@ class KeyCapturePopup(tk.Toplevel):
         # Formatar o nome da tecla
         key_name = event.keysym
         if 'KP_' in key_name: # Teclas do Numpad
-            key_name = key_name.replace('KP_', 'NUM') # Ex: NUMADD, NUMSUB
+            key_name = key_name.replace('KP_', 'NUM')
         
         self.callback(key_name.upper())
         self.destroy()
@@ -166,11 +180,11 @@ class AutoPot(threading.Thread):
                     if current_hp_percent < self.threshold:
                         print(f"HP baixo ({current_hp_percent:.0%}), usando poção na tecla '{self.use_key}'")
                         send_key(self.hwnd, self.use_key)
-                        time.sleep(0.3) # Cooldown para evitar spam de poção
+                        time.sleep(AUTOPOT_DELAY)
                 else:
                     self.status_callback("HP: 0 / 0", "gray")
                 
-                time.sleep(0.1)
+                time.sleep(AUTOPOT_CHECK_INTERVAL)
             except (pymem.exception.MemoryReadError, ZeroDivisionError):
                 self.status_callback("Erro na leitura de HP", "red")
                 time.sleep(1)
@@ -208,9 +222,9 @@ class AutoBuff(threading.Thread):
                 if buff['id'] not in active_buff_ids:
                     print(f"Buff '{buff['name']}' inativo. Usando skill na tecla '{buff['key']}'")
                     send_key(self.hwnd, buff['key'])
-                    time.sleep(1.0) # Cooldown para não spammar o mesmo buff
+                    time.sleep(AUTBUFF_COOLDOWN)
             
-            time.sleep(1.5)
+            time.sleep(AUTBUFF_CHECK_INTERVAL)
         print("Thread de AutoBuff parada.")
         self.status_callback("Buffs: N/A", "gray")
 
@@ -231,13 +245,40 @@ class SkillSpam(threading.Thread):
             states = self.get_key_states()
             for key, state in states.items():
                 if state > 0 and keyboard.is_pressed(key):
-                    if state == 1: # Spam Tecla + Clique
+                    try:
+                        # Pega a posição original do cursor relativa à janela
+                        screen_pos = win32gui.GetCursorPos()
+                        client_pos = win32gui.ScreenToClient(self.hwnd, screen_pos)
+                        
+                        # 1. Envia a tecla
                         send_key(self.hwnd, key)
-                        send_click(self.hwnd)
-                    elif state == 2: # Spam Tecla Apenas
-                        send_key(self.hwnd, key)
-                    time.sleep(0.05)
-            time.sleep(0.01)
+
+                        # 2. Move o mouse para a primeira posição diagonal (usando SendMessage)
+                        pos1_x = client_pos[0] - FLICK_DISTANCE
+                        pos1_y = client_pos[1] - FLICK_DISTANCE
+                        lparam1 = win32api.MAKELONG(pos1_x, pos1_y)
+                        send_message(self.hwnd, win32con.WM_MOUSEMOVE, 0, lparam1)
+
+                        # <<< ALTERADO: Adiciona delay para controlar velocidade do flick >>>
+                        time.sleep(MOUSE_FLICK_SPEED)
+
+                        # 3. Envia o clique NA NOVA POSIÇÃO (se o modo for Tecla+Clique)
+                        if state == 1:
+                            send_click(self.hwnd, coords=(pos1_x, pos1_y))
+
+                        # 4. Move o mouse para a posição diagonal oposta
+                        pos2_x = client_pos[0] + FLICK_DISTANCE
+                        pos2_y = client_pos[1] + FLICK_DISTANCE
+                        lparam2 = win32api.MAKELONG(pos2_x, pos2_y)
+                        send_message(self.hwnd, win32con.WM_MOUSEMOVE, 0, lparam2)
+                        
+                        time.sleep(SKILLSPAM_DELAY)
+
+                    except Exception as e:
+                        print(f"[ERRO] Falha no loop de spam/flick: {e}")
+                        time.sleep(0.1)
+
+            time.sleep(0.01) # Pequena pausa no loop principal
     
     def stop(self):
         self.running.clear()
@@ -286,8 +327,6 @@ class App(tk.Tk):
         style.map("TButton", background=[('active', '#007A9E')])
         style.configure("TCheckbutton", background=self.colors['bg_frame'], foreground=self.colors['text'], font=self.fonts['body'])
         style.map("TCheckbutton", background=[('active', self.colors['bg_frame'])])
-
-        # **CORREÇÃO: Estilos para o Menubutton do SkillSpam**
         style.configure("TMenubutton", background=self.colors['bg_light'], foreground=self.colors['text'], font=self.fonts['body'], width=3)
         style.configure('Accent.TMenubutton', background=self.colors['accent'], foreground='white')
         style.map('Accent.TMenubutton', background=[('active', '#007A9E')])
@@ -400,7 +439,6 @@ class App(tk.Tk):
 
     def open_key_capture_popup(self, key_var):
         """Abre a janela para capturar a tecla e atualiza a key_var com o resultado."""
-        # A função de callback atualiza a StringVar diretamente.
         callback = lambda new_key: key_var.set(new_key)
         KeyCapturePopup(self, callback)
 
@@ -436,7 +474,6 @@ class App(tk.Tk):
             menu = tk.Menu(key_btn, tearoff=False, bg=self.colors['bg_light'], fg=self.colors['text'])
             key_btn['menu'] = menu
 
-            # **CORREÇÃO: Usar os estilos corretos para o Menubutton**
             menu.add_radiobutton(label="Desativado", variable=var, value=0, command=lambda k=key_btn: k.config(style='TMenubutton'))
             menu.add_radiobutton(label="Spam Tecla+Clique", variable=var, value=1, command=lambda k=key_btn: k.config(style='Accent.TMenubutton'))
             menu.add_radiobutton(label="Spam Tecla", variable=var, value=2, command=lambda k=key_btn: k.config(style='Accent.TMenubutton'))
